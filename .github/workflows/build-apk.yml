@@ -15,13 +15,21 @@ jobs:
       - name: Node.js kur
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
-      - name: JDK 17 kur
+      - name: JDK 21 kur
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
+
+      - name: Android SDK kur (lisanslar dahil, otomatik)
+        uses: android-actions/setup-android@v3
+
+      - name: Gerekli Android SDK paketlerini garanti altına al
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          yes | sdkmanager --licenses > /dev/null || true
 
       - name: npm bağımlılıklarını kur
         run: npm install
@@ -32,12 +40,24 @@ jobs:
       - name: Capacitor Android senkronize et
         run: npx cap sync android
 
+      - name: local.properties oluştur (SDK yolunu garanti altına al)
+        working-directory: android
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
       - name: Gradle ile APK derle
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        run: chmod +x gradlew && ./gradlew assembleDebug --stacktrace
 
       - name: APK'yı yükle (indirilebilir hale getir)
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: sirius-piyasa-analizi-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Hata olursa tam derleme logunu da yükle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: android/app/build/outputs/logs/
