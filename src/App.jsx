@@ -9,7 +9,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // Backend proxy adresi — anahtarlar artık burada, sunucu tarafında.
 // Aynı WiFi'daki telefonda test ederken "localhost" yerine
 // bilgisayarının IP'sini yaz (örn. http://192.168.1.24/piyasa-api)
-const API_BASE = "http://localhost/piyasa-api";
+const API_BASE = "http://192.168.1.6/piyasa-api";
 
 const MARKETS = {
   crypto: {
@@ -203,9 +203,22 @@ async function fetchForexLive(pair) {
   return rate;
 }
 
+// Proxy'ye giden her isteği sarmalar — ağ hatası (telefonun proxy'ye ulaşamaması)
+// olursa "Failed to fetch" gibi anlaşılmaz bir mesaj yerine API_BASE'i işaret
+// eden net bir Türkçe açıklama fırlatır.
+async function proxyFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (e) {
+    throw new Error(
+      `Proxy'ye ulaşılamadı (${API_BASE}). Telefon ve bilgisayar aynı WiFi'da mı, XAMPP/Apache çalışıyor mu, API_BASE doğru IP'yi mi gösteriyor kontrol et.`
+    );
+  }
+}
+
 /* ---------------- BIST — artık kendi PHP proxy'miz üzerinden (anahtarlar sunucuda, tarayıcıya hiç gelmez) ---------------- */
 async function fetchBistQuote(code) {
-  const res = await fetch(`${API_BASE}/financebird.php?code=${encodeURIComponent(code)}`);
+  const res = await proxyFetch(`${API_BASE}/financebird.php?code=${encodeURIComponent(code)}`);
   if (!res.ok) throw new Error("FinanceBird proxy isteği başarısız (" + res.status + ")");
   const j = await res.json();
   const price = j.regularMarketPrice || j.currentPrice || j.price || j.summary?.price;
@@ -220,7 +233,7 @@ async function fetchBistQuote(code) {
 }
 
 async function fetchBist100List() {
-  const res = await fetch(`${API_BASE}/bist100.php`);
+  const res = await proxyFetch(`${API_BASE}/bist100.php`);
   if (!res.ok) throw new Error("BIST100 proxy isteği başarısız (" + res.status + ")");
   const j = await res.json();
   const list = Array.isArray(j) ? j : Array.isArray(j.data) ? j.data : Array.isArray(j.prices) ? j.prices : Array.isArray(j.result) ? j.result : Object.values(j).find(Array.isArray);
@@ -244,7 +257,7 @@ function extractBistEntry(list, code) {
 
 async function fetchBistQuoteNosy(code) {
   const url = `${API_BASE}/nosyapi.php?code=${encodeURIComponent(code)}`;
-  const res = await fetch(url);
+  const res = await proxyFetch(url);
   if (!res.ok) throw new Error("NosyAPI proxy isteği başarısız (" + res.status + ")");
   const j = await res.json();
   if (j.status !== "success" || !j.data || !j.data.length) throw new Error(j.messageTR || "NosyAPI veri döndürmedi");
@@ -279,6 +292,38 @@ async function fetchMetalOHLC(coingeckoId) {
   return raw.map((k) => ({ t: k[0], open: k[1], high: k[2], low: k[3], close: k[4] }));
 }
 
+// Mevcut mum dizisini gruplar halinde birleştirip daha uzun periyotlu
+// (günlük/haftalık/aylık) bir görünüm üretir — gerçek verinin kendisinden
+// türetilir, yeni bir kaynağa ihtiyaç duymaz.
+function resampleCandles(candles, groupSize) {
+  if (!candles?.length || groupSize <= 1) return candles;
+  const out = [];
+  for (let i = 0; i < candles.length; i += groupSize) {
+    const chunk = candles.slice(i, i + groupSize);
+    if (!chunk.length) continue;
+    out.push({
+      t: chunk[0].t,
+      open: chunk[0].open,
+      close: chunk[chunk.length - 1].close,
+      high: Math.max(...chunk.map((c) => c.high)),
+      low: Math.min(...chunk.map((c) => c.low)),
+    });
+  }
+  return out;
+}
+
+// Büyütülmüş grafik paneli için: kripto'da gerçek Binance interval'ı ile
+// (günlük/haftalık/aylık gerçek mum verisi) daha uzun bir geçmiş çeker.
+async function fetchCryptoRange(symbol, view) {
+  const map = { gunluk: { interval: "1d", limit: 120 }, haftalik: { interval: "1w", limit: 110 }, aylik: { interval: "1M", limit: 80 } };
+  const { interval, limit } = map[view];
+  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Binance isteği başarısız (" + res.status + ")");
+  const raw = await res.json();
+  return raw.map((k) => ({ t: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]) }));
+}
+
 function scaleCandles(candles, factor) {
   return candles.map((c) => ({ t: c.t, open: c.open * factor, high: c.high * factor, low: c.low * factor, close: c.close * factor }));
 }
@@ -297,7 +342,7 @@ function reconcileLastClose(candles, livePrice) {
 }
 
 async function fetchMetalsDevSpot(metalName) {
-  const res = await fetch(`${API_BASE}/metalsdev.php?metal=${encodeURIComponent(metalName)}`);
+  const res = await proxyFetch(`${API_BASE}/metalsdev.php?metal=${encodeURIComponent(metalName)}`);
   const j = await res.json();
   if (!res.ok || j.error) throw new Error(j.message || "Metals.Dev proxy isteği başarısız (" + res.status + ")");
   const price = j?.metals?.[metalName.toLowerCase()];
@@ -322,7 +367,7 @@ AI tahmin dağılımı: artış %${forecast.up}, yatay %${forecast.flat}, azalı
 Volatilite (ATR): %${atrPct}
 `.trim();
 
-  const res = await fetch(`${API_BASE}/groq.php`, {
+  const res = await proxyFetch(`${API_BASE}/groq.php`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -723,6 +768,11 @@ export default function App() {
   const [groqAnalysis, setGroqAnalysis] = useState("");
   const [groqLoading, setGroqLoading] = useState(false);
   const [groqError, setGroqError] = useState("");
+  const [chartModalOpen, setChartModalOpen] = useState(false);
+  const [chartView, setChartView] = useState("gunluk");
+  const [modalCandles, setModalCandles] = useState([]);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalNote, setModalNote] = useState("");
   const bist100CacheRef = useRef({ list: null, ts: 0 });
 
   const getBist100List = useCallback(async () => {
@@ -887,12 +937,64 @@ export default function App() {
     setSymbolQuery("");
   };
 
+  const loadModalData = useCallback(
+    async (view) => {
+      setModalLoading(true);
+      try {
+        if (market === "crypto") {
+          const data = await fetchCryptoRange(symbol, view);
+          setModalCandles(data);
+          setModalNote("Binance — gerçek " + (view === "gunluk" ? "günlük" : view === "haftalik" ? "haftalık" : "aylık") + " mum verisi");
+        } else if (market === "forex") {
+          const groupSize = view === "gunluk" ? 1 : view === "haftalik" ? 7 : 30;
+          const resampled = resampleCandles(candles, groupSize);
+          setModalCandles(resampled);
+          setModalNote(
+            view === "gunluk"
+              ? "Frankfurter (ECB) — gerçek günlük kapanış verisi"
+              : "Gerçek günlük verinin " + (view === "haftalik" ? "haftalık" : "aylık") + " gruplanmış hâli"
+          );
+        } else {
+          // BIST / Madenler: mevcut (çoğunlukla sentetik) seriden görünüm türetilir
+          const groupSize = view === "gunluk" ? 1 : view === "haftalik" ? 7 : 24;
+          const resampled = resampleCandles(candles, groupSize);
+          setModalCandles(resampled);
+          setModalNote(
+            (status.kind === "demo" ? "Demo veri" : "Anlık fiyat gerçek, geçmiş sentetik") +
+              " — " +
+              (view === "gunluk" ? "günlük" : view === "haftalik" ? "haftalık" : "aylık") +
+              " gruplanmış görünüm"
+          );
+        }
+      } catch (e) {
+        setModalCandles(candles);
+        setModalNote("Büyütülmüş görünüm alınamadı, mevcut veri gösteriliyor: " + e.message);
+      } finally {
+        setModalLoading(false);
+      }
+    },
+    [market, symbol, candles, status.kind]
+  );
+
+  const openChartModal = () => {
+    setChartModalOpen(true);
+    loadModalData(chartView);
+  };
+
+  const changeChartView = (view) => {
+    setChartView(view);
+    loadModalData(view);
+  };
+
   const analysis = useMemo(() => buildAnalysis(candles), [candles]);
   const forecast = useMemo(() => buildForecast(candles, analysis), [candles, analysis]);
+  const modalAnalysis = useMemo(() => buildAnalysis(modalCandles), [modalCandles]);
 
   useEffect(() => {
     setGroqAnalysis("");
     setGroqError("");
+    setChartModalOpen(false);
+    setChartView("gunluk");
   }, [market, symbol]);
 
   const runGroqAnalysis = async () => {
@@ -1059,9 +1161,18 @@ export default function App() {
               {MARKETS[market].symbols.find((s) => s.v === symbol)?.l}{" "}
               {market === "crypto" && <span className="mono" style={{ fontSize: 11, color: "#7C8798", fontWeight: 400 }}>{timeframe}</span>}
             </div>
-            <span className="mono" style={{ fontSize: 10, color: statusColor[status.kind], border: `1px solid ${statusColor[status.kind]}55`, padding: "3px 8px", borderRadius: 5 }}>
-              {status.kind === "live" ? "GERÇEK VERİ" : status.kind === "mixed" ? "KISMEN GERÇEK" : "DEMO VERİ"}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                onClick={openChartModal}
+                className="pill mono"
+                style={{ fontSize: 10.5, color: "#E8B44C", border: "1px solid #E8B44C55", borderRadius: 6, padding: "5px 9px", background: "transparent", cursor: "pointer" }}
+              >
+                ⤢ Grafiği Büyüt
+              </button>
+              <span className="mono" style={{ fontSize: 10, color: statusColor[status.kind], border: `1px solid ${statusColor[status.kind]}55`, padding: "3px 8px", borderRadius: 5 }}>
+                {status.kind === "live" ? "GERÇEK VERİ" : status.kind === "mixed" ? "KISMEN GERÇEK" : "DEMO VERİ"}
+              </span>
+            </div>
           </div>
 
           {analysis && (
@@ -1217,9 +1328,80 @@ export default function App() {
         </div>
       </div>
 
+      <ChartModal
+        open={chartModalOpen}
+        onClose={() => setChartModalOpen(false)}
+        symbolLabel={MARKETS[market].symbols.find((s) => s.v === symbol)?.l}
+        view={chartView}
+        onViewChange={changeChartView}
+        candles={modalCandles}
+        analysis={modalAnalysis}
+        loading={modalLoading}
+        note={modalNote}
+      />
+
       <div className="mono" style={{ padding: "0 22px 22px", fontSize: 10.5, color: "#5B6472", lineHeight: 1.6 }}>
         Bu araç eğitim/analiz amaçlıdır, yatırım tavsiyesi değildir. Skor ve olay tespitleri sabit kurallara dayalı bir sezgisel algoritmadan üretilir; gerçek bir eğitilmiş modelin (ML) tahmini değildir ve gelecekteki hareketi garanti etmez.
       </div>
+      <div className="mono" style={{ padding: "0 22px 26px", fontSize: 10.5, color: "#4A5160", textAlign: "center", borderTop: "1px solid #161B24", paddingTop: 14 }}>
+        SİRİUS YAZILIM ve BİLİŞİM TEKNOLOJİLERİ © Tüm Hakları Saklıdır V1.0 — Ümüt Çağlar
+      </div>
+      </div>
+    </div>
+  );
+}
+
+function ChartModal({ open, onClose, symbolLabel, view, onViewChange, candles, analysis, loading, note }) {
+  if (!open) return null;
+  const views = [
+    { v: "gunluk", l: "Günlük" },
+    { v: "haftalik", l: "Haftalık" },
+    { v: "aylik", l: "Aylık" },
+  ];
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(2,3,5,0.82)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "20px 12px", overflowY: "auto" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: "#12161D", border: "1px solid #2A3242", borderRadius: 14, padding: 18, width: "100%", maxWidth: 900, marginTop: 20 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{symbolLabel}</div>
+          <button onClick={onClose} className="pill mono" style={{ fontSize: 13, color: "#9AA4B2", border: "1px solid #232A36", borderRadius: 6, padding: "5px 10px", background: "transparent", cursor: "pointer" }}>
+            ✕ Kapat
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {views.map((vw) => (
+            <button
+              key={vw.v}
+              onClick={() => onViewChange(vw.v)}
+              className="pill mono"
+              style={{
+                fontSize: 12.5,
+                padding: "8px 16px",
+                borderRadius: 8,
+                border: `1px solid ${view === vw.v ? "#E8B44C" : "#232A36"}`,
+                background: view === vw.v ? "rgba(232,180,76,0.12)" : "transparent",
+                color: view === vw.v ? "#E8B44C" : "#9AA4B2",
+                cursor: "pointer",
+              }}
+            >
+              {vw.l}
+            </button>
+          ))}
+        </div>
+
+        {loading ? (
+          <div style={{ display: "grid", placeItems: "center", height: 420, color: "#7C8798" }} className="mono">yükleniyor…</div>
+        ) : (
+          <Candlestick candles={candles} analysis={analysis} height={460} />
+        )}
+
+        <div className="mono" style={{ fontSize: 11, color: "#7C8798", marginTop: 10, lineHeight: 1.5 }}>{note}</div>
       </div>
     </div>
   );
