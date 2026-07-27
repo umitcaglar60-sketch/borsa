@@ -203,23 +203,19 @@ async function fetchForexLive(pair) {
   return rate;
 }
 
-// Proxy'ye giden her isteği sarmalar — ağ hatası (telefonun proxy'ye ulaşamaması)
-// olursa "Failed to fetch" gibi anlaşılmaz bir mesaj yerine API_BASE'i işaret
-// eden net bir Türkçe açıklama fırlatır.
-async function proxyFetch(url, options) {
-  try {
-    return await fetch(url, options);
-  } catch (e) {
-    throw new Error(
-      `Proxy'ye ulaşılamadı (${API_BASE}). Telefon ve bilgisayar aynı WiFi'da mı, XAMPP/Apache çalışıyor mu, API_BASE doğru IP'yi mi gösteriyor kontrol et.`
-    );
-  }
-}
+// Bu anahtarlar kişisel/aile kullanımı için doğrudan uygulamaya gömülüdür
+// (Play Store'a herkese açık yayınlanmayacağı için kabul edilebilir bir seçim —
+// bir APK decompile edilirse bu anahtarlar görülebilir, bunu bilerek tercih ettik).
+const RAPIDAPI_KEY = "2091ed606cmsh8388afd5fe08bb4p1ba6a0jsnc79f5272bcd2";
+const NOSYAPI_KEY = "WKQw8W8pnQuQsmqFudWF8ywJ8xtAUm76Is3JYtlsVIQLJIjix7NG97ah21Wb";
+const GROQ_KEY = "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";
 
-/* ---------------- BIST — artık kendi PHP proxy'miz üzerinden (anahtarlar sunucuda, tarayıcıya hiç gelmez) ---------------- */
+/* ---------------- BIST — doğrudan üçüncü parti API'lere, gömülü anahtarlarla ---------------- */
 async function fetchBistQuote(code) {
-  const res = await proxyFetch(`${API_BASE}/financebird.php?code=${encodeURIComponent(code)}`);
-  if (!res.ok) throw new Error("FinanceBird proxy isteği başarısız (" + res.status + ")");
+  const res = await fetch(`https://financebird.p.rapidapi.com/quote/${code}.IS`, {
+    headers: { "x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": "financebird.p.rapidapi.com" },
+  });
+  if (!res.ok) throw new Error("FinanceBird isteği başarısız (" + res.status + ")");
   const j = await res.json();
   const price = j.regularMarketPrice || j.currentPrice || j.price || j.summary?.price;
   if (!price) throw new Error("Fiyat alanı bulunamadı");
@@ -233,8 +229,11 @@ async function fetchBistQuote(code) {
 }
 
 async function fetchBist100List() {
-  const res = await proxyFetch(`${API_BASE}/bist100.php`);
-  if (!res.ok) throw new Error("BIST100 proxy isteği başarısız (" + res.status + ")");
+  const host = "bist100-stock-data-15-minutes-late-live.p.rapidapi.com";
+  const res = await fetch(`https://${host}/bist100/prices`, {
+    headers: { "x-rapidapi-host": host, "x-rapidapi-key": RAPIDAPI_KEY, "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error("BIST100 isteği başarısız (" + res.status + ")");
   const j = await res.json();
   const list = Array.isArray(j) ? j : Array.isArray(j.data) ? j.data : Array.isArray(j.prices) ? j.prices : Array.isArray(j.result) ? j.result : Object.values(j).find(Array.isArray);
   if (!list || !list.length) throw new Error("Liste formatı tanınamadı: " + JSON.stringify(j).slice(0, 140));
@@ -256,9 +255,9 @@ function extractBistEntry(list, code) {
 }
 
 async function fetchBistQuoteNosy(code) {
-  const url = `${API_BASE}/nosyapi.php?code=${encodeURIComponent(code)}`;
-  const res = await proxyFetch(url);
-  if (!res.ok) throw new Error("NosyAPI proxy isteği başarısız (" + res.status + ")");
+  const url = `https://www.nosyapi.com/apiv2/service/economy/bist/exchange-rate?apiKey=${encodeURIComponent(NOSYAPI_KEY)}&code=${code}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("NosyAPI isteği başarısız (" + res.status + ")");
   const j = await res.json();
   if (j.status !== "success" || !j.data || !j.data.length) throw new Error(j.messageTR || "NosyAPI veri döndürmedi");
   const d = j.data[0];
@@ -342,7 +341,7 @@ function reconcileLastClose(candles, livePrice) {
 }
 
 async function fetchMetalsDevSpot(metalName) {
-  const res = await proxyFetch(`${API_BASE}/metalsdev.php?metal=${encodeURIComponent(metalName)}`);
+  const res = await fetch(`${API_BASE}/metalsdev.php?metal=${encodeURIComponent(metalName)}`);
   const j = await res.json();
   if (!res.ok || j.error) throw new Error(j.message || "Metals.Dev proxy isteği başarısız (" + res.status + ")");
   const price = j?.metals?.[metalName.toLowerCase()];
@@ -367,9 +366,9 @@ AI tahmin dağılımı: artış %${forecast.up}, yatay %${forecast.flat}, azalı
 Volatilite (ATR): %${atrPct}
 `.trim();
 
-  const res = await proxyFetch(`${API_BASE}/groq.php`, {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + GROQ_KEY },
     body: JSON.stringify({
       model: "llama-3.3-70b-versatile",
       messages: [
@@ -386,7 +385,7 @@ Volatilite (ATR): %${atrPct}
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error("Groq proxy isteği başarısız (" + res.status + ") " + errText.slice(0, 160));
+    throw new Error("Groq isteği başarısız (" + res.status + ") " + errText.slice(0, 160));
   }
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content;
@@ -1106,8 +1105,7 @@ export default function App() {
         {showInfo && (
           <div className="mono" style={{ marginTop: 14, fontSize: 11.5, lineHeight: 1.75, color: "#9AA4B2", background: "#12161D", border: "1px solid #1C222D", borderRadius: 8, padding: 14 }}>
             <div style={{ color: "#E7EAEE", marginBottom: 6 }}>Mimari</div>
-            RapidAPI, NosyAPI ve Groq anahtarları artık bu kodun içinde değil — <code>{API_BASE}</code> adresindeki
-            PHP proxy'nde (XAMPP) saklanıyor. Bu ekran/uygulama o anahtarları hiç görmüyor.<br /><br />
+            RapidAPI, NosyAPI ve Groq anahtarları bu sürümde doğrudan uygulamaya gömülüdür — WiFi/proxy bağımlılığı yok, uygulama tek başına, herhangi bir ağda çalışır. (Platin/paladyum hâlâ opsiyonel bir proxy üzerinden Metals.Dev kullanır, o özellik için bilgisayarla aynı WiFi gerekir.)<br /><br />
             <div style={{ color: "#E7EAEE", marginBottom: 6 }}>Kripto</div>
             Binance genel klines API — anahtarsız, gerçek zamanlı mum verisi. Erişilemezse CoinGecko'ya otomatik geçilir.<br /><br />
             <div style={{ color: "#E7EAEE", marginBottom: 6 }}>Forex</div>
@@ -1322,7 +1320,7 @@ export default function App() {
               </div>
             )}
             <div className="mono" style={{ fontSize: 9.5, color: "#5B6472", lineHeight: 1.5, marginTop: 10 }}>
-              Anahtar bu ekranda hiç yok — istek {API_BASE}/groq.php üzerinden sunucuna gidiyor, Groq'a oradan bağlanılıyor.
+              Groq'a bu cihazdan doğrudan bağlanılır, bilgisayar/WiFi bağımlılığı yoktur.
             </div>
           </div>
         </div>
@@ -1352,12 +1350,58 @@ export default function App() {
 }
 
 function ChartModal({ open, onClose, symbolLabel, view, onViewChange, candles, analysis, loading, note }) {
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const pinchRef = useRef({ active: false, startDist: 0, startScale: 1, startTx: 0, startTy: 0 });
+  const panRef = useRef({ active: false, startX: 0, startY: 0, startTx: 0, startTy: 0 });
+
+  useEffect(() => {
+    setScale(1);
+    setTx(0);
+    setTy(0);
+  }, [open, view]);
+
   if (!open) return null;
+
   const views = [
     { v: "gunluk", l: "Günlük" },
     { v: "haftalik", l: "Haftalık" },
     { v: "aylik", l: "Aylık" },
   ];
+
+  const dist = (t1, t2) => Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+  const onTouchStart = (e) => {
+    if (e.touches.length === 2) {
+      pinchRef.current = { active: true, startDist: dist(e.touches[0], e.touches[1]), startScale: scale, startTx: tx, startTy: ty };
+      panRef.current.active = false;
+    } else if (e.touches.length === 1 && scale > 1) {
+      panRef.current = { active: true, startX: e.touches[0].clientX, startY: e.touches[0].clientY, startTx: tx, startTy: ty };
+    }
+  };
+  const onTouchMove = (e) => {
+    if (e.touches.length === 2 && pinchRef.current.active) {
+      e.preventDefault();
+      const d = dist(e.touches[0], e.touches[1]);
+      const newScale = Math.min(4, Math.max(1, pinchRef.current.startScale * (d / pinchRef.current.startDist)));
+      setScale(newScale);
+    } else if (e.touches.length === 1 && panRef.current.active) {
+      e.preventDefault();
+      setTx(panRef.current.startTx + (e.touches[0].clientX - panRef.current.startX));
+      setTy(panRef.current.startTy + (e.touches[0].clientY - panRef.current.startY));
+    }
+  };
+  const onTouchEnd = (e) => {
+    if (e.touches.length < 2) pinchRef.current.active = false;
+    if (e.touches.length < 1) panRef.current.active = false;
+  };
+  const resetZoom = () => {
+    setScale(1);
+    setTx(0);
+    setTy(0);
+  };
+
   return (
     <div
       style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(2,3,5,0.82)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "20px 12px", overflowY: "auto" }}
@@ -1369,9 +1413,16 @@ function ChartModal({ open, onClose, symbolLabel, view, onViewChange, candles, a
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{symbolLabel}</div>
-          <button onClick={onClose} className="pill mono" style={{ fontSize: 13, color: "#9AA4B2", border: "1px solid #232A36", borderRadius: 6, padding: "5px 10px", background: "transparent", cursor: "pointer" }}>
-            ✕ Kapat
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            {scale > 1 && (
+              <button onClick={resetZoom} className="pill mono" style={{ fontSize: 12, color: "#E8B44C", border: "1px solid #E8B44C55", borderRadius: 6, padding: "5px 10px", background: "transparent", cursor: "pointer" }}>
+                ↺ Sıfırla
+              </button>
+            )}
+            <button onClick={onClose} className="pill mono" style={{ fontSize: 13, color: "#9AA4B2", border: "1px solid #232A36", borderRadius: 6, padding: "5px 10px", background: "transparent", cursor: "pointer" }}>
+              ✕ Kapat
+            </button>
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -1398,8 +1449,28 @@ function ChartModal({ open, onClose, symbolLabel, view, onViewChange, candles, a
         {loading ? (
           <div style={{ display: "grid", placeItems: "center", height: 420, color: "#7C8798" }} className="mono">yükleniyor…</div>
         ) : (
-          <Candlestick candles={candles} analysis={analysis} height={460} />
+          <div
+            style={{ overflow: "hidden", touchAction: "none", borderRadius: 8 }}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+            onDoubleClick={resetZoom}
+          >
+            <div
+              style={{
+                transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+                transformOrigin: "center center",
+                transition: pinchRef.current.active || panRef.current.active ? "none" : "transform 0.15s ease",
+              }}
+            >
+              <Candlestick candles={candles} analysis={analysis} height={460} />
+            </div>
+          </div>
         )}
+
+        <div className="mono" style={{ fontSize: 10.5, color: "#5B6472", marginTop: 8 }}>
+          İki parmakla yakınlaştır, yakınlaştırdıktan sonra tek parmakla kaydır. Çift dokunuş sıfırlar.
+        </div>
 
         <div className="mono" style={{ fontSize: 11, color: "#7C8798", marginTop: 10, lineHeight: 1.5 }}>{note}</div>
       </div>
